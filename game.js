@@ -20,6 +20,10 @@ const elements = {
   record: document.querySelector("#record"),
   finalRecord: document.querySelector("#finalRecord"),
   message: document.querySelector("#message"),
+  pauseButton: document.querySelector("#pauseButton"),
+  fullscreenButton: document.querySelector("#fullscreenButton"),
+  pauseOverlay: document.querySelector("#pauseOverlay"),
+  resumeButton: document.querySelector("#resumeButton"),
 };
 
 const CONFIG = {
@@ -37,6 +41,7 @@ let height = innerHeight;
 let pixelRatio = Math.min(devicePixelRatio || 1, 2);
 let previousTime = performance.now();
 let running = false;
+let paused = false;
 let pointerActive = false;
 let soundMuted = false;
 let audioContext = null;
@@ -61,6 +66,8 @@ const state = {
   bombTimer: 6,
   bridgeTimer: 9,
   cloudTimer: 7,
+  waterPulse: 0,
+  speedLines: [],
   shake: 0,
   player: {
     x: width / 2,
@@ -176,6 +183,8 @@ function resetState() {
   state.bombTimer = 6;
   state.bridgeTimer = 9;
   state.cloudTimer = 7;
+  state.waterPulse = 0;
+  state.speedLines = [];
   state.shake = 0;
 
   Object.assign(state.player, {
@@ -222,10 +231,29 @@ function showMessage(text, duration = 1000) {
   }, duration);
 }
 
+function setPaused(value) {
+  if (!running) return;
+  paused = value;
+  elements.pauseOverlay.classList.toggle("hidden", !paused);
+  elements.pauseButton.textContent = paused ? "▶️" : "⏸️";
+  if (paused) stopEngineSound();
+  else if (!soundMuted) startEngineSound();
+}
+function togglePause(){ setPaused(!paused); }
+async function toggleFullscreen(){
+  try {
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen?.();
+    else await document.exitFullscreen?.();
+  } catch { showMessage("Tela cheia indisponível", 900); }
+}
+
 function startGame() {
   initializeAudio();
   resetState();
   running = true;
+  paused = false;
+  elements.pauseOverlay.classList.add("hidden");
+  elements.pauseButton.classList.remove("hidden");
   elements.menu.classList.add("hidden");
   elements.gameOver.classList.add("hidden");
   elements.hud.classList.remove("hidden");
@@ -236,6 +264,9 @@ function startGame() {
 
 function finishGame() {
   running = false;
+  paused = false;
+  elements.pauseButton.classList.add("hidden");
+  elements.pauseOverlay.classList.add("hidden");
   stopEngineSound();
   playTone(180, 0.4, "sawtooth", 0.16);
 
@@ -454,6 +485,7 @@ function circlesOverlap(aX, aY, aRadius, bX, bY, bRadius) {
 function destroyObstacle(obstacle) {
   obstacle.destroyed = true;
   state.score += obstacle.points;
+  showMessage(`+${obstacle.points}`, 450);
   createParticles(
     obstacle.x,
     obstacle.y,
@@ -515,11 +547,12 @@ function updatePlayer(delta) {
 
 function update(delta) {
   state.riverPhase += delta * 0.18;
+  state.waterPulse += delta;
 
-  if (!running) return;
+  if (!running || paused) return;
 
   state.time += delta;
-  state.worldSpeed += delta * 3.2;
+  state.worldSpeed += delta * 2.5;
   state.score += delta * CONFIG.scoreRate;
   state.fuel -= delta * CONFIG.fuelDrain;
   state.player.invulnerable = Math.max(
@@ -530,11 +563,16 @@ function update(delta) {
 
   updatePlayer(delta);
 
+  if (Math.random() < 0.14) {
+    const bounds = riverBounds(-20, 20);
+    state.speedLines.push({x: bounds.left + Math.random()*(bounds.right-bounds.left), y:-30, length:18+Math.random()*34, alpha:0.12+Math.random()*0.16});
+  }
+
   state.obstacleTimer -= delta;
   if (state.obstacleTimer <= 0) {
     spawnObstacle();
     state.obstacleTimer =
-      0.65 + Math.random() * 0.65 - Math.min(0.34, state.time / 75);
+      0.72 + Math.random() * 0.68 - Math.min(0.30, state.time / 90);
   }
 
   state.fuelTimer -= delta;
@@ -604,9 +642,8 @@ function update(delta) {
     particle.life -= delta;
   }
 
-  for (const cloud of state.clouds) {
-    cloud.y += (state.worldSpeed * 0.45 + cloud.velocity) * delta;
-  }
+  for (const cloud of state.clouds) { cloud.y += (state.worldSpeed * 0.45 + cloud.velocity) * delta; }
+  for (const line of state.speedLines) { line.y += state.worldSpeed * 1.35 * delta; }
 
   for (const bullet of state.bullets) {
     if (bullet.destroyed) continue;
@@ -673,7 +710,8 @@ function update(delta) {
       state.fuel = Math.min(100, state.fuel + 30);
       state.score += 30;
       playTone(850, 0.16, "triangle", 0.14);
-      createParticles(pickup.x, pickup.y, "80,255,170", 14);
+      showMessage("+30 COMBUSTÍVEL", 650);
+      createParticles(pickup.x, pickup.y, "80,255,170", 20);
     }
   }
 
@@ -693,7 +731,8 @@ function update(delta) {
       state.bombs = Math.min(5, state.bombs + 1);
       state.score += 40;
       playTone(680, 0.16, "triangle", 0.14);
-      createParticles(pickup.x, pickup.y, "255,220,70", 14);
+      showMessage("+1 BOMBA", 650);
+      createParticles(pickup.x, pickup.y, "255,220,70", 20);
     }
   }
 
@@ -720,9 +759,8 @@ function update(delta) {
   );
   state.bridges = state.bridges.filter((item) => item.y < height + 90);
   state.particles = state.particles.filter((item) => item.life > 0);
-  state.clouds = state.clouds.filter(
-    (item) => item.y - item.size < height + 140,
-  );
+  state.clouds = state.clouds.filter((item) => item.y - item.size < height + 140);
+  state.speedLines = state.speedLines.filter((item) => item.y < height + 60);
 
   state.fuel = Math.max(0, state.fuel);
   if (state.fuel <= 0) loseLife();
@@ -753,9 +791,11 @@ function drawRiver() {
   context.closePath();
 
   const riverGradient = context.createLinearGradient(0, 0, width, 0);
-  riverGradient.addColorStop(0, "#245a83");
-  riverGradient.addColorStop(0.5, "#3d96ca");
-  riverGradient.addColorStop(1, "#245a83");
+  riverGradient.addColorStop(0, "#173e66");
+  riverGradient.addColorStop(0.35, "#2d82b7");
+  riverGradient.addColorStop(0.5, "#54acd1");
+  riverGradient.addColorStop(0.65, "#2d82b7");
+  riverGradient.addColorStop(1, "#173e66");
 
   context.fillStyle = riverGradient;
   context.fill();
@@ -930,6 +970,14 @@ function drawObstacle(obstacle) {
     context.ellipse(0, 4, 30, 11, 0, 0, Math.PI * 2);
     context.stroke();
   }
+  for (const line of state.speedLines) {
+    context.strokeStyle = `rgba(255,255,255,${line.alpha})`;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(line.x, line.y);
+    context.lineTo(line.x, line.y + line.length);
+    context.stroke();
+  }
 
   context.restore();
 }
@@ -988,10 +1036,14 @@ function drawPlayer() {
 
   context.strokeStyle = "rgb(30 30 30 / 45%)";
   context.lineWidth = 3;
+  context.save();
+  context.translate(0, -31);
+  context.rotate(state.time * 28);
   context.beginPath();
-  context.moveTo(-14, -31);
-  context.lineTo(14, -31);
+  context.moveTo(-16, 0);
+  context.lineTo(16, 0);
   context.stroke();
+  context.restore();
 
   context.restore();
 }
@@ -1059,6 +1111,9 @@ function draw() {
 
   for (const particle of state.particles) {
     const alpha = Math.max(0, particle.life / particle.maxLife);
+    context.save();
+    context.shadowColor = `rgba(${particle.color},${alpha})`;
+    context.shadowBlur = 10;
     context.fillStyle = `rgba(${particle.color},${alpha})`;
     context.beginPath();
     context.arc(
@@ -1069,6 +1124,7 @@ function draw() {
       Math.PI * 2,
     );
     context.fill();
+    context.restore();
   }
 
   drawPlayer();
@@ -1123,8 +1179,9 @@ addEventListener("keydown", (event) => {
 
   pressedKeys.add(event.code);
 
-  if (event.code === "Space" && running && !event.repeat) fire();
-  if (event.code === "KeyB" && running && !event.repeat) useBomb();
+  if (event.code === "Space" && running && !paused && !event.repeat) fire();
+  if (event.code === "KeyB" && running && !paused && !event.repeat) useBomb();
+  if (event.code === "KeyP" && running && !event.repeat) togglePause();
 });
 
 addEventListener("keyup", (event) => {
@@ -1133,6 +1190,9 @@ addEventListener("keyup", (event) => {
 
 elements.playButton.addEventListener("click", startGame);
 elements.restartButton.addEventListener("click", startGame);
+elements.pauseButton.addEventListener("click", togglePause);
+elements.resumeButton.addEventListener("click", () => setPaused(false));
+elements.fullscreenButton.addEventListener("click", toggleFullscreen);
 elements.fireButton.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   fire();
